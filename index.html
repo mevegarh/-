@@ -819,6 +819,18 @@
         <input type="number" id="givenMoney" placeholder="Enter Given Money ₹" style="flex: 1;">
         <button id="enterBtn" onclick="updateBalance(true)" style="flex-shrink: 0; background: #28a745;">Enter</button>
       </div>
+
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px;">
+        <select id="paymentMethod" style="flex: 1; min-width: 120px; padding: 10px; border: none; border-radius: 6px; font-size: 15px;" onchange="togglePaymentMethodOther()">
+          <option value="Cash">💵 Cash</option>
+          <option value="PhonePe">📱 PhonePe</option>
+          <option value="Paytm">📱 Paytm</option>
+          <option value="GooglePay">📱 GooglePay</option>
+          <option value="Other">✏️ Other</option>
+        </select>
+        <input type="text" id="paymentMethodOther" placeholder="Specify method" style="flex: 1; min-width: 120px; display: none;">
+      </div>
+
       <div id="remaining">Remaining: ₹0</div>
 
       <!-- Money History Section -->
@@ -885,32 +897,14 @@
   let paymentReminderInterval = null;
 
   // ---------------- Shared data layer (Google Apps Script + Sheets) ----------------
-  // Pushes/pulls "folders" (customers, products, payments), the login
-  // history, and the payment QR code to a Google Sheet, so the same shop's
-  // data is available on any phone that logs in - not just the device that
-  // created it. Replace this URL with your own Apps Script web app URL.
+  // Only the account info (name, shop name, phone number) is sent to the
+  // Google Sheet, one row per login/edit. Folders, products, payments and
+  // the QR code stay local to the device only (localStorage), same as before.
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyIorx8pAR-UhCv5LQ_dJcgOg4Qjpk8R2Nj0CWd90AS-qF2oAAgnxyMmAIubxoQmGbL/exec';
 
-  async function loadFromServer() {
-    if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PASTE_')) return;
-    try {
-      const res = await fetch(APPS_SCRIPT_URL);
-      const text = await res.text();
-      const data = text && text.trim() ? JSON.parse(text) : {};
-      if (data.folders) localStorage.setItem('folders', JSON.stringify(data.folders));
-      if (data.qrCode) localStorage.setItem('mainQRCode', data.qrCode);
-      if (data.users) localStorage.setItem('appUsersHistory', JSON.stringify(data.users));
-    } catch (e) {
-      console.log('Could not reach the server - check your internet connection.', e);
-    }
-  }
-
-  async function syncToServer() {
-    if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PASTE_')) return;
+  async function syncUsersToServer() {
     try {
       const payload = {
-        folders: JSON.parse(localStorage.getItem('folders')) || [],
-        qrCode: localStorage.getItem('mainQRCode') || '',
         users: JSON.parse(localStorage.getItem('appUsersHistory')) || []
       };
       // text/plain avoids a CORS preflight, which Apps Script web apps don't handle.
@@ -929,7 +923,7 @@
     let history = JSON.parse(localStorage.getItem('appUsersHistory')) || [];
     history.push({ ...data, recordedAt: new Date().toLocaleString('en-IN') });
     localStorage.setItem('appUsersHistory', JSON.stringify(history));
-    syncToServer();
+    syncUsersToServer();
   }
 
   function toNumber(val){ return isNaN(val) || val=="" ? 0 : Number(val); }
@@ -1023,7 +1017,6 @@
     if (folderIndex > -1) {
       savedFolders[folderIndex].paymentDateInfo = paymentDateInfo;
       localStorage.setItem("folders", JSON.stringify(savedFolders));
-      syncToServer();
       updatePaymentDateDisplay(paymentDateInfo);
       alert(`Payment reminder set for ${days} day(s) from now`);
     }
@@ -1077,7 +1070,6 @@
       if (folderIndex > -1) {
         savedFolders[folderIndex].paymentDateInfo = paymentDateInfo;
         localStorage.setItem("folders", JSON.stringify(savedFolders));
-        syncToServer();
       }
     }
   }
@@ -1133,7 +1125,6 @@
     if (folderIndex > -1 && savedFolders[folderIndex].paymentDateInfo) {
       savedFolders[folderIndex].paymentDateInfo.messageSent = true;
       localStorage.setItem("folders", JSON.stringify(savedFolders));
-      syncToServer();
       updatePaymentDateDisplay(savedFolders[folderIndex].paymentDateInfo);
     }
     
@@ -1285,15 +1276,10 @@
 
     // Save updated folders
     localStorage.setItem("folders", JSON.stringify(savedFolders));
-    syncToServer();
   }
 
   // Login Functionality
-  document.addEventListener('DOMContentLoaded', async function() {
-    // Pull the latest folders/QR/login-history from the shared sheet first,
-    // so this device sees data saved from any other phone.
-    await loadFromServer();
-
+  document.addEventListener('DOMContentLoaded', function() {
     // Check if user has already logged in
     const savedUserData = localStorage.getItem("userData");
     
@@ -1413,7 +1399,6 @@
       
       // Save QR code to localStorage as global QR code
       localStorage.setItem("mainQRCode", qrImageData);
-      syncToServer();
       
       // Display the QR code
       displayMainQRCode(qrImageData);
@@ -1452,7 +1437,6 @@
   function removeMainQR() {
     if (confirm('Are you sure you want to remove the payment QR code?')) {
       localStorage.removeItem("mainQRCode");
-      syncToServer();
       displayMainQRCode(null);
       alert('QR code removed successfully.');
     }
@@ -1512,7 +1496,6 @@
       dailyLogs: []
     });
     localStorage.setItem("folders", JSON.stringify(savedFolders));
-    syncToServer();
     displayFolder(folderName);
   }
 
@@ -1543,7 +1526,6 @@
     if (!folder.dailyLogs.includes(today)) {
       folder.dailyLogs.push(today);
       localStorage.setItem("folders", JSON.stringify(savedFolders));
-      syncToServer();
     }
 
     const container = document.getElementById("productsContainer");
@@ -1601,13 +1583,29 @@
     }
   }
 
+  function togglePaymentMethodOther() {
+    const method = document.getElementById("paymentMethod").value;
+    const otherBox = document.getElementById("paymentMethodOther");
+    otherBox.style.display = (method === "Other") ? "block" : "none";
+  }
+
+  function getSelectedPaymentMethod() {
+    const method = document.getElementById("paymentMethod").value;
+    if (method === "Other") {
+      const custom = document.getElementById("paymentMethodOther").value.trim();
+      return custom || "Other";
+    }
+    return method;
+  }
+
   function updateBalance(autoSave=false){
     const givenInput = document.getElementById("givenMoney");
     const given = toNumber(givenInput.value);
     
     if (given > 0) {
+      const method = getSelectedPaymentMethod();
       showMoneySubtractionFeedback(given);
-      saveGivenMoney(given);
+      saveGivenMoney(given, method);
     }
     
     const remElem = document.getElementById("remaining");
@@ -1624,6 +1622,9 @@
     remElem.classList.add("flash");
     setTimeout(()=>remElem.classList.remove("flash"), 250);
     givenInput.value = "";
+    document.getElementById("paymentMethod").value = "Cash";
+    document.getElementById("paymentMethodOther").value = "";
+    togglePaymentMethodOther();
     saveFolderSilently();
     displayMoneyHistory();
     updatePaymentSummary();
@@ -1663,7 +1664,7 @@
     }
   }
 
-  function saveGivenMoney(amount) {
+  function saveGivenMoney(amount, method = "Cash") {
     const today = new Date().toLocaleDateString('en-IN');
     const now = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
     let savedFolders = JSON.parse(localStorage.getItem("folders")) || [];
@@ -1678,11 +1679,11 @@
         date: today,
         time: now,
         amount: amount,
+        method: method,
         timestamp: new Date().toISOString()
       });
       
       localStorage.setItem("folders", JSON.stringify(savedFolders));
-      syncToServer();
     }
   }
 
@@ -1710,7 +1711,7 @@
     
     historyContainer.innerHTML = sortedHistory.map(entry => `
       <div class="money-entry">
-        <span class="money-date">${entry.date} ${entry.time}</span>
+        <span class="money-date">${entry.date} ${entry.time}${entry.method ? ' • ' + entry.method : ''}</span>
         <span class="money-amount">₹${formatCurrency(entry.amount)}</span>
       </div>
     `).join('');
@@ -1731,7 +1732,6 @@
       savedFolders[index]={...savedFolders[index],products,total,phone}; 
     }
     localStorage.setItem("folders", JSON.stringify(savedFolders));
-    syncToServer();
   }
 
   document.addEventListener("input", e => {
@@ -1757,7 +1757,6 @@
       let savedFolders = JSON.parse(localStorage.getItem("folders")) || [];
       savedFolders = savedFolders.filter(f=>f.name!==currentFolder);
       localStorage.setItem("folders", JSON.stringify(savedFolders));
-      syncToServer();
       alert("🗑 Folder deleted successfully!");
       showFolderPage();
     }
