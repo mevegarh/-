@@ -674,8 +674,6 @@
           <h3 id="userDisplayName">User Name</h3>
           <p id="userShopName">Shop Name</p>
         </div>
-        <?xml version="1.0" encoding="utf-8"?>
-
 
         <div class="account-details">
           <div class="account-detail">
@@ -886,6 +884,54 @@
   let userData = null;
   let paymentReminderInterval = null;
 
+  // ---------------- Shared data layer (Google Apps Script + Sheets) ----------------
+  // Pushes/pulls "folders" (customers, products, payments), the login
+  // history, and the payment QR code to a Google Sheet, so the same shop's
+  // data is available on any phone that logs in - not just the device that
+  // created it. Replace this URL with your own Apps Script web app URL.
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyIorx8pAR-UhCv5LQ_dJcgOg4Qjpk8R2Nj0CWd90AS-qF2oAAgnxyMmAIubxoQmGbL/exec';
+
+  async function loadFromServer() {
+    if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PASTE_')) return;
+    try {
+      const res = await fetch(APPS_SCRIPT_URL);
+      const text = await res.text();
+      const data = text && text.trim() ? JSON.parse(text) : {};
+      if (data.folders) localStorage.setItem('folders', JSON.stringify(data.folders));
+      if (data.qrCode) localStorage.setItem('mainQRCode', data.qrCode);
+      if (data.users) localStorage.setItem('appUsersHistory', JSON.stringify(data.users));
+    } catch (e) {
+      console.log('Could not reach the server - check your internet connection.', e);
+    }
+  }
+
+  async function syncToServer() {
+    if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.startsWith('PASTE_')) return;
+    try {
+      const payload = {
+        folders: JSON.parse(localStorage.getItem('folders')) || [],
+        qrCode: localStorage.getItem('mainQRCode') || '',
+        users: JSON.parse(localStorage.getItem('appUsersHistory')) || []
+      };
+      // text/plain avoids a CORS preflight, which Apps Script web apps don't handle.
+      await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+    } catch (e) {
+      console.log('Could not save to the server - check your internet connection.', e);
+    }
+  }
+
+  // Records every login/account-edit as a row in the "Users" tab, then syncs.
+  function recordUserAndSync(data) {
+    let history = JSON.parse(localStorage.getItem('appUsersHistory')) || [];
+    history.push({ ...data, recordedAt: new Date().toLocaleString('en-IN') });
+    localStorage.setItem('appUsersHistory', JSON.stringify(history));
+    syncToServer();
+  }
+
   function toNumber(val){ return isNaN(val) || val=="" ? 0 : Number(val); }
   function formatCurrency(num){ return Number(num).toLocaleString('en-IN'); }
 
@@ -977,6 +1023,7 @@
     if (folderIndex > -1) {
       savedFolders[folderIndex].paymentDateInfo = paymentDateInfo;
       localStorage.setItem("folders", JSON.stringify(savedFolders));
+      syncToServer();
       updatePaymentDateDisplay(paymentDateInfo);
       alert(`Payment reminder set for ${days} day(s) from now`);
     }
@@ -1030,6 +1077,7 @@
       if (folderIndex > -1) {
         savedFolders[folderIndex].paymentDateInfo = paymentDateInfo;
         localStorage.setItem("folders", JSON.stringify(savedFolders));
+        syncToServer();
       }
     }
   }
@@ -1085,6 +1133,7 @@
     if (folderIndex > -1 && savedFolders[folderIndex].paymentDateInfo) {
       savedFolders[folderIndex].paymentDateInfo.messageSent = true;
       localStorage.setItem("folders", JSON.stringify(savedFolders));
+      syncToServer();
       updatePaymentDateDisplay(savedFolders[folderIndex].paymentDateInfo);
     }
     
@@ -1236,10 +1285,15 @@
 
     // Save updated folders
     localStorage.setItem("folders", JSON.stringify(savedFolders));
+    syncToServer();
   }
 
   // Login Functionality
-  document.addEventListener('DOMContentLoaded', function() {
+  document.addEventListener('DOMContentLoaded', async function() {
+    // Pull the latest folders/QR/login-history from the shared sheet first,
+    // so this device sees data saved from any other phone.
+    await loadFromServer();
+
     // Check if user has already logged in
     const savedUserData = localStorage.getItem("userData");
     
@@ -1262,24 +1316,23 @@
     }
     
     // Handle login form submission
-    document.getElementById("loginForm").addEventListener("submit", function(e) {
-      e.preventDefault();
-      
-      const userName = document.getElementById("userName").value;
-      const shopName = document.getElementById("shopName").value;
-      const phoneNumber = document.getElementById("phoneNumber").value;
-      
-      if (userName && shopName && phoneNumber) {
-        // Save user data
-        userData = {
-          userName: userName,
-          shopName: shopName,
-          phoneNumber: phoneNumber,
-          loginTime: new Date().toISOString()
-        };
-        
-        localStorage.setItem("userData", JSON.stringify(userData));
-        
+   document.getElementById("loginForm").addEventListener("submit", function(e) {
+  e.preventDefault();
+  
+  const userName = document.getElementById("userName").value;
+  const shopName = document.getElementById("shopName").value;
+  const phoneNumber = document.getElementById("phoneNumber").value;
+  
+  if (userName && shopName && phoneNumber) {
+    userData = {
+      userName: userName,
+      shopName: shopName,
+      phoneNumber: phoneNumber,
+      loginTime: new Date().toISOString()
+    };
+    
+    localStorage.setItem("userData", JSON.stringify(userData));
+        recordUserAndSync(userData);
         // Show success message
         document.getElementById("loginMessage").textContent = "Account created successfully!";
         
@@ -1299,40 +1352,33 @@
     });
 
     // Handle edit form submission
-    document.getElementById("editForm").addEventListener("submit", function(e) {
-      e.preventDefault();
-      
-      const userName = document.getElementById("editUserName").value;
-      const shopName = document.getElementById("editShopName").value;
-      const phoneNumber = document.getElementById("editPhoneNumber").value;
-      
-      if (userName && shopName && phoneNumber) {
-        // Update user data
-        userData = {
-          userName: userName,
-          shopName: shopName,
-          phoneNumber: phoneNumber,
-          loginTime: new Date().toISOString()
-        };
-        
-        localStorage.setItem("userData", JSON.stringify(userData));
-        updateAccountDisplay();
-        closeEditModal();
-        alert("✅ Account details updated successfully!");
-      } else {
-        alert("Please fill all fields!");
-      }
-    });
+    document.getElementById("editForm").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  
+  const userName = document.getElementById("editUserName").value;
+  const shopName = document.getElementById("editShopName").value;
+  const phoneNumber = document.getElementById("editPhoneNumber").value;
 
-    // Close dropdown when clicking outside
-    document.addEventListener('click', function(event) {
-      const accountSection = document.querySelector('.account-section');
-      const accountButton = document.getElementById('accountButton');
-      
-      if (!accountSection.contains(event.target)) {
-        closeAccountDropdown();
-      }
-    });
+  if (userName && shopName && phoneNumber) {
+
+    const data = {
+      userName,
+      shopName,
+      phoneNumber
+    };
+
+    localStorage.setItem("userData", JSON.stringify(data));
+    recordUserAndSync(data);
+
+    updateAccountDisplay();
+    closeEditModal();
+
+    alert("✅ Account updated!");
+
+  } else {
+    alert("Please fill all fields!");
+  }
+});
 
     // Account button click event
     document.getElementById('accountButton').addEventListener('click', toggleAccountDropdown);
@@ -1367,6 +1413,7 @@
       
       // Save QR code to localStorage as global QR code
       localStorage.setItem("mainQRCode", qrImageData);
+      syncToServer();
       
       // Display the QR code
       displayMainQRCode(qrImageData);
@@ -1405,6 +1452,7 @@
   function removeMainQR() {
     if (confirm('Are you sure you want to remove the payment QR code?')) {
       localStorage.removeItem("mainQRCode");
+      syncToServer();
       displayMainQRCode(null);
       alert('QR code removed successfully.');
     }
@@ -1464,6 +1512,7 @@
       dailyLogs: []
     });
     localStorage.setItem("folders", JSON.stringify(savedFolders));
+    syncToServer();
     displayFolder(folderName);
   }
 
@@ -1494,6 +1543,7 @@
     if (!folder.dailyLogs.includes(today)) {
       folder.dailyLogs.push(today);
       localStorage.setItem("folders", JSON.stringify(savedFolders));
+      syncToServer();
     }
 
     const container = document.getElementById("productsContainer");
@@ -1632,6 +1682,7 @@
       });
       
       localStorage.setItem("folders", JSON.stringify(savedFolders));
+      syncToServer();
     }
   }
 
@@ -1680,6 +1731,7 @@
       savedFolders[index]={...savedFolders[index],products,total,phone}; 
     }
     localStorage.setItem("folders", JSON.stringify(savedFolders));
+    syncToServer();
   }
 
   document.addEventListener("input", e => {
@@ -1705,6 +1757,7 @@
       let savedFolders = JSON.parse(localStorage.getItem("folders")) || [];
       savedFolders = savedFolders.filter(f=>f.name!==currentFolder);
       localStorage.setItem("folders", JSON.stringify(savedFolders));
+      syncToServer();
       alert("🗑 Folder deleted successfully!");
       showFolderPage();
     }
@@ -1721,7 +1774,6 @@
     window.location.href=`tel:${phone}`; 
   }
 
-  // UPDATED SMS FUNCTION - Now uses shop details from login
   function sendSMS(){
     const phone=document.getElementById("customerPhone").value;
     if(!phone)return alert("Please enter a phone number first.");
