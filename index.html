@@ -929,6 +929,17 @@
   function toNumber(val){ return isNaN(val) || val=="" ? 0 : Number(val); }
   function formatCurrency(num){ return Number(num).toLocaleString('en-IN'); }
 
+  // Builds the "money given" history text for SMS messages
+  function buildHistoryText(entries) {
+    if (!entries || entries.length === 0) return "No payments received yet\n";
+    const sorted = [...entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    let text = "";
+    sorted.forEach((e, i) => {
+      text += `  ${i + 1}. ${e.date} ${e.time || ''} - ₹${formatCurrency(e.amount)} (${e.method || 'Cash'})\n`;
+    });
+    return text;
+  }
+
   // Account Management Functions
   function toggleAccountDropdown() {
     const dropdown = document.getElementById('accountDropdown');
@@ -1137,6 +1148,9 @@
     const remaining = total - totalGiven;
     const userData = JSON.parse(localStorage.getItem("userData"));
     const shopName = userData ? userData.shopName : "Shop";
+
+    const savedFolders = JSON.parse(localStorage.getItem("folders")) || [];
+    const folder = savedFolders.find(f => f.name === currentFolder);
     
     let billText = `🏪 ${shopName}\n`;
     billText += `📅 Date: ${new Date().toLocaleDateString('en-IN')}\n`;
@@ -1150,6 +1164,9 @@
       }
     });
     
+    billText += "────────────────────\n";
+    billText += "💰 MONEY GIVEN HISTORY:\n";
+    billText += buildHistoryText(folder ? folder.givenMoney : []);
     billText += "────────────────────\n";
     billText += `💰 Total: ₹${formatCurrency(total)}\n`;
     billText += `💳 Paid: ₹${formatCurrency(totalGiven)}\n`;
@@ -1257,6 +1274,7 @@
             let message = `🔔 REMINDER: You have to pay ₹${formatCurrency(remaining)} money ${userData.shopName} pay fast\n\n`;
             message += `Bill Details:\n`;
             message += `Customer: ${folder.name}\n`;
+            message += `Money Given History:\n${buildHistoryText(folder.givenMoney)}`;
             message += `Total: ₹${formatCurrency(folder.total)}\n`;
             message += `Paid: ₹${formatCurrency(totalGiven)}\n`;
             message += `Remaining: ₹${formatCurrency(remaining)}\n`;
@@ -1598,16 +1616,23 @@
     return method;
   }
 
-  function updateBalance(autoSave=false){
+  function updateBalance(record = false){
     const givenInput = document.getElementById("givenMoney");
     const given = toNumber(givenInput.value);
-    
-    if (given > 0) {
-      const method = getSelectedPaymentMethod();
+
+    // Only record a payment when the Enter button / Enter key was used
+    if (record === true && given > 0) {
+      const method = getSelectedPaymentMethod();   // read BEFORE anything resets
       showMoneySubtractionFeedback(given);
       saveGivenMoney(given, method);
+
+      // reset the inputs only after a payment was really saved
+      givenInput.value = "";
+      document.getElementById("paymentMethod").value = "Cash";
+      document.getElementById("paymentMethodOther").value = "";
+      togglePaymentMethodOther();
     }
-    
+
     const remElem = document.getElementById("remaining");
     const remaining = total - getTotalGivenMoney();
 
@@ -1621,10 +1646,6 @@
 
     remElem.classList.add("flash");
     setTimeout(()=>remElem.classList.remove("flash"), 250);
-    givenInput.value = "";
-    document.getElementById("paymentMethod").value = "Cash";
-    document.getElementById("paymentMethodOther").value = "";
-    togglePaymentMethodOther();
     saveFolderSilently();
     displayMoneyHistory();
     updatePaymentSummary();
@@ -1711,7 +1732,7 @@
     
     historyContainer.innerHTML = sortedHistory.map(entry => `
       <div class="money-entry">
-        <span class="money-date">${entry.date} ${entry.time}${entry.method ? ' • ' + entry.method : ''}</span>
+        <span class="money-date">${entry.date} ${entry.time}${' • ' + (entry.method || 'Cash')}</span>
         <span class="money-amount">₹${formatCurrency(entry.amount)}</span>
       </div>
     `).join('');
@@ -1786,11 +1807,15 @@
     
     const remaining = total - getTotalGivenMoney();
     let message = "";
+
+    const savedFolders = JSON.parse(localStorage.getItem("folders")) || [];
+    const folder = savedFolders.find(f => f.name === currentFolder);
+    const historyText = buildHistoryText(folder ? folder.givenMoney : []);
     
     if (remaining > 0) {
-      message = `You have to pay ₹${formatCurrency(remaining)} money ${userData.shopName} pay fast`;
+      message = `You have to pay ₹${formatCurrency(remaining)} money ${userData.shopName} pay fast\n\nMoney Given History:\n${historyText}`;
     } else {
-      message = `✅ Fully Paid! Thank you for your payment to ${userData.shopName}.`;
+      message = `✅ Fully Paid! Thank you for your payment to ${userData.shopName}.\n\nMoney Given History:\n${historyText}`;
     }
     
     window.location.href=`sms:${phone}?body=${encodeURIComponent(message)}`;
